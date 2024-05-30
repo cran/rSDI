@@ -1,0 +1,310 @@
+---
+title: "rSDI"
+author: Mehmet Gençer
+output: 
+  rmarkdown::html_vignette:
+    number_sections: yes
+    toc: yes
+bibliography: SDI.bib
+link-citations: TRUE
+vignette: >
+  %\VignetteIndexEntry{rSDI}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  echo=F,
+  warning = F,
+  message = F
+)
+```
+
+```{r setup}
+library(rSDI)
+#devtools::load_all()
+```
+
+# Spatial Dispersion Index (SDI) for Analysis of Activity Outreach in Spatial and Geographic Networks
+
+Consider a network of movements or exchanges between places. This is commonplace in socio-economic activities. For example: when you order something from Amazon, the movement of your package from one warehouse to the next is part of Amazon's shipment network, or even part of the global shipment network. Our commutes to work in the morning can be considered a commute network between neighborhoods/cities/offices. Each of these cases can be considered as an specialized instance of the mathematical concept of 'graph' called spatial graph: a graph consisting of vertices with fixed locations, and arcs/edges connecting these vertices.
+
+In social and economic sciences analysis of relations in such a network is very interesting, and with the recent availability and coverage of spatial network data, very useful for managerial planning in private firms and policy decisions such as urban planning in public agencies. On the other hand metrics concerning spatial aspects of networks are almost always problem specific and not general. Spatial Dispersion Index (SDI) is a generalized measurement index, or rather a family of indices to evaluate spatial distances of movements in a network in a problem neutral way, thus aims to address this problem. rSDI computes and optionally visualizes this index with minimal hassle:
+
+```{r echo=TRUE, eval=FALSE}
+library(rSDI)
+SDI(TurkiyeMigration.flows, TurkiyeMigration.nodes, variant="vow") %>% plotSDI(variant="vow")
+```
+
+
+The core idea of the SDI index was conceived as part of a large scale government commissioned   [study report, in Turkish](https://www.kalkinmakutuphanesi.gov.tr/dokuman/yer-sis-iller-ve-bolgeler-arasi-sosyo-ekonomik-ag-iliskileri-raporu/2591) [@Gencer2021], whose results are yearly updated with new data and is available as a live analysis at <https://yersis.gov.tr/web>. The SDI index was later was generalized and published on its own merit, and explained in detail [in the paper](https://dx.doi.org/10.1007/s12061-023-09545-8) [@gencer2023sdi].
+
+rSDI package provides functions to compute SDI family of indices for spatial graphs in conjunction with its definition the paper [@gencer2023sdi]. rSDI also provides some convenience functions to visualize SDI index measurements. While this is not its primary reason of existence it is often very practical for the user to have some preliminary visualization at arm's length. In sections 2 and 3 below we first explain the concept of spatial networks and their data, then review mathematical graph formalism to represent spatial networks. Then we introduce the SDI index family's calculation, its interpretation, and thumb rules for choosing an index for your analyses. The last two sections provide a run through of index calculation then visualization features of the rSDI package using an example data set provided by the package, on human migration between provinces of Turkiye.
+
+# Spatial networks and their data
+
+Spatial networks are represented as a particular type of graph where the graph nodes (vertices) are fixed locations and each graph arc/edge represent a flow/relation between two of these nodes. In most real life cases these networks represent varying flows of people (e.g. transportation), good (e.g. trade, shopping), or information (e.g. Internet data transfer, phone call). Thus the graph is weighted and directed and has arcs, rather than edges. Also in most cases the network is geospatial.  In geospatial networks the locations of vertices in the representing graph are, for example, cities, airports, etc., and are defined with their latitude and longitude. This is the case for most examples of movements related to trade, migration, education, services, etc. In other cases the spatial network may span a smaller space and is rather measured on its own Cartesian references; for example in the case of student movement on a campus, or movement of parts in a production facility. In those latter cases vertices (e.g. campus library, a welding station) have an x-y position defined with respect to a chosen corner or center of the campus, production facility, etc. 
+
+Spatial network data consists of two data frames: one representing the flows and the other detailing the locations, and possibly labels of nodes in the network. The following is a simple, imaginary spatial network data:
+
+```{r}
+flows<-data.frame(from=c("A","B","A"), to=c("B","A","C"), weight=c(10,20,5))
+nodes<-data.frame(id=c("A","B","C","D"),x=c(0,4,0,4),y=c(3,0,0,3))
+flowsWithDistances<-flows
+flowsWithDistances$distance <- c(5,5,3)
+library(igraph)
+g<-graph_from_data_frame(flows, directed=TRUE, vertices=nodes)
+library(ggplot2)
+library(ggraph)
+library(ggimage)
+url<-"https://static.wikia.nocookie.net/lotr/images/5/59/Middle-earth.jpg/revision/latest?cb=20060726004750"
+
+lay <- create_layout(g, 'manual', x=V(g)$x, y=V(g)$y)
+p<-ggraph(lay) +
+  geom_edge_bend(aes(label=E(g)$weight), label_size=10,strength=0.4,edge_width=3,alpha=0.3,arrow = arrow(length = unit(10, 'mm')))+
+  #geom_node_point(size = 10, aes(color="yellow"),alpha=0.4) +
+  geom_node_point(size=10)+
+  geom_node_text(label=V(g)$name, size=10, vjust=-0.7,hjust=1)+
+  xlim(-3,5)+ylim(-2,4)
+p<-ggbackground(p, url) #see https://stackoverflow.com/questions/51255832/how-to-add-an-image-on-ggplot-background-not-the-panel
+```
+
+```{r , fig.show="hold", out.width="50%"}
+knitr::kable(list(flows,nodes),booktabs = TRUE, valign = 't',caption = 'Data frames providing flows (left) and nodes (right) for an imaginary spatial network')
+```
+
+This spatial network is visualized below, showing node locations as well as flow amounts (weights) on lines representing edges:
+
+```{r, fig.width=7, fig.height=5}
+p
+```
+
+# Graph notation to represent spatial networks
+
+A spatial network, $N$, is represented with the mathematical concept of graph, which consists of vertices, $V$, representing the locations/nodes in the spatial network and ties/edges, $E$ representing flows tying them together into a network, thus $N=(V,E)$. To capture a flow over an edge $e_{ij}$ from vertex $i$ to vertex $j$ let us denote the amount of flow on the edge as edge weight $w_{i\rightarrow j}$. In graph theoretic terms this corresponds to a directed and weighted graph.
+
+To capture spatial aspects of the network let $p_i=<x_i,y_i>$ and $p_j=<x_j, y_j>$ denote locations of vertices $i$ and $j$, respectively, in some two dimensional space such as Cartesian or geographic locations. In the latter, the coordinates $x$ and $y$ would denote the longitude and latitude of a geographical location, respectively. One can now speak of a spatial distance, $\delta_{ij}$, between any two vertices. In the case of geographical networks Haversine distance would be appropriate for determining spherical distances between two locations:
+
+\begin{equation}
+\delta^{H}_{ij}=2R\arcsin\left(\sqrt{\sin^{2}\left({\frac{y_j-y_i}{2}}\right)+\cos(\varphi_{i})\cos(\varphi_{j})\sin^{2}\left({\frac{x_j-x_i}{2}}\right)}\right)
+\end{equation}
+Where $R$ is the radius of the Earth, which is roughly $6,371$ km. 
+
+In the case of a more local spatial network we would probably have Cartesian coordinates, e.g. x-y coordinates within a production plant, of which we analyse flows of parts between stations. In those cases an Euclidean distance can be used instead:
+\begin{equation}
+\delta^E_{ij}=\sqrt{(x_i-x_j)^2+(y_i-y_j)^2}
+\end{equation}
+
+In our toy example from the previous section the Euclidean distances can be easily calculated (since it is a simple 3-4-5 triangle) for each edge as follows (defaulting to Euclidean distance for Middle Earth, since we have no latitude/longitude information about it):
+```{r}
+knitr::kable(flowsWithDistances,booktabs = TRUE, valign = 't',caption = 'The flow data with distances between the source and target location of  flows added')
+```
+
+# SDI: Definition and uses
+
+In order to quantify spatial reach of the flows in a spatial network, the spatial distance of two nodes should be incorporated with the flow between the nodes. The Spatial Dispersion Index here is a direct translation of this idea and is broadly defined as the weighted average distances the network flows span, wighted by flow amounts. The key idea was conceived by the author, explained thoroughly and put into use in a broader field study report [@gencer2023sdi]. A brief discussion and definition is presented here.
+
+SDI is a family of indices rather than a single index. The reason for its variants is related to differential research interests  when analyzing spatial networks. Here we explain these variations. Further below we introduce the three letter, XXX, notation to symbolize corresponding SDI variants:
+
+* First: SDI can be computed for the whole network, $\textrm{SDI}(N)$, or on a per-node or per-vertex basis, $\textrm{SDI}(i)$.
+* Second: Particularly when it is computed on a per-node basis, one may be interested in the dispersion of out-flows  or in-flows only, or both (undirected): ie. $\textrm{SDI}_{-}(\ldots)$, $\textrm{SDI}_{+}(\ldots)$, or $\textrm{SDI}_{\pm}(\ldots)$, where a + sign denotes out-dispersion and a - sign denotes in-dispersion indices.
+* Third: In social network analysis theory, there is an important discussion about strength of relations [@Opsahl2010]: presence of a relation has an importance as different from the strength of it. This warns us against, for example, assuming that a flow of one bird from location A-to-B in a bird migration network is negligible when compared to flow of one thousand birds from A-to-C. The very existence of A-to-B flow has an importance at its own right, as separate from its strength, e.g. for its future effects of spreading of a bird species. For this reason there a several variants of social network metrics calculations in the social networks analysis area which: 
+  - considers only presence of relations: this corresponds to unweighted SDI calculation variant which treats each flow as unit strength: $\textrm{SDI}_{\ldots}^{u}(\ldots)$
+  - considers only strength of relations: this corresponds to weighted SDI calculation variant which cares only strengths/amounts of flows: $\textrm{SDI}_{\ldots}^{w}(\ldots)$
+  - considers both presence and strength of relations, with a user given preference tuning parameter: this corresponds to generalized SDI calculation: $\textrm{SDI}_{\ldots}^{w\alpha}(\ldots)$
+
+As an illustrative example, network level, weighted SDI index would be computed as follows ^[please note that when run over the whole network, directionality makes no difference, so we omit the $\textrm{SDI}_{\pm}(\ldots)$ notation in this one]:
+\begin{equation}
+\textrm{SDI}^w(N)=\frac{\sum_{i \rightarrow j \in E}{(w_{i\rightarrow j} \cdot \delta_{ij})}}{\sum_{i\rightarrow j \in E}{w_{i\rightarrow j}}} 
+\end{equation}
+For our toy problem this could be computed as: $\textrm{SDI}^w(N)=(10*5+20*5+5*3)/(10+20+5)$
+
+Whereas a node level, unweighted, out-flows only index would be computed by replacing all weights with 1s:
+\begin{equation}
+\textrm{SDI}^u_{+}(i)=\frac{\sum_{i\rightarrow j \in E}{(1 \cdot \delta_{ij})}}{\sum_{i\rightarrow j \in E}{1}}
+\end{equation}
+Which is simply the average of distances of the flows towards the focal node. For our toy problem's node A, this can be computed as $\textrm{SDI}^u_{+}(A)=(5+3)/2$
+
+Please consult the source paper, @gencer2023sdi, and help pages for an extensive description of index calculation for the above cases.
+
+SDI computation uses a three letter index variant code to represent a variant of the index. The LDS code corresponds to usage of Level-Direction-and-Strength of network ties, respectively. For example an LDS code of "nuw" would mean a **n**etwork level, **u**ndirected, and **w**eighted SDI variant. Each part of the LDS code can take the following values:
+
+* Level: **n**etwork or **v**ertex
+* Direction: use **i**n-flows only, use **o**ut-flows only, or **u**ndirected (use all edges in an undirected graph or use both in and out flows in a directed graph), 
+* Strength: **w**eighted, **u**nweighted, or **g**eneralized (combination of weighted and unweighted with alpha parameter)
+
+# A simple example
+
+rSDI functions consume an igraph object and return their output as an igraph which has additional edge, vertex, and/or graph attributes. Let us start with an example involving the helper function `dist_calc()`. This function is not neded to be called explicitly in a normal workflow, but normally invoked by `SDI()`, the main entry point of SDI calculations. It computes the distances between pairs of nodes which are connected by each graph edge. The computed distances are returned as edge attributes of the returned graph. Consider the following spatial network data frames for the fictional spatial network above:
+
+```{r echo=TRUE}
+flows<-data.frame(from=c("A","B","A"), to=c("B","A","C"), weight=c(10,20,5))
+nodes<-data.frame(id=c("A","B","C","D"),x=c(0,4,0,4),y=c(3,0,0,3))
+library(igraph)
+toyGraph <- graph_from_data_frame(flows, directed=TRUE, vertices=nodes)
+```
+
+The edges of the graph has only the 'weight' attribute:
+
+```{r}
+edge_attr_names(toyGraph)
+```
+
+rSDI's main function is `SDI()`. `SDI()` function works in a similar fashion and adds its output as graph and vertex attribute (in addition to computing and adding edge distance attributes if they are missing, which is a prerequisite for all SDI metrics):
+
+```{r SDI.with.defaults, eval=T, echo=TRUE}
+toyGraphWithSDI <- SDI(toyGraph) #same as SDI(toyGraph, level="vertex", directionality="undirected", weight.use="weighted")
+edge_attr_names(toyGraphWithSDI)
+vertex_attr_names(toyGraphWithSDI)
+```
+
+To help its user follow the theoretical distinctions explained in the previous section, rSDI letter codes the index measurements it measures şn accordance with that classification. In the the example above, call to SDI function computes (1) **v**ertex level, (2) **u**ndirected,, and (3) **w**eighted SDI index, which are the defaults. Thus to each vertex of its input graph it adds and attribute named 'SDI_vuw'. The attribute is added to each vertex even if the index cannot be computed. This is the case for vertex D which has an NA value stored in its 'SDI_vuw' attribute:
+
+```{r eval=T, echo=TRUE}
+vertex_attr(toyGraphWithSDI, "SDI_vuw")
+```
+
+If the index is computed at the network level the vertices will not have additional attributes but the graph itself will, following the same convention:
+
+```{r SDI.at.network.level, eval=T, echo=TRUE}
+toyGraphWithNetworkSDI <- SDI(toyGraph, level="network", directionality="undirected", weight.use="weighted")
+graph_attr_names(toyGraphWithNetworkSDI) 
+graph_attr(toyGraphWithNetworkSDI,"SDI_nuw")
+```
+
+Once you are comfortable with this convention you can shorten your calls to `SDI()` using the 'variant' parameter as follows, which is equivalent to the call in the example above:
+
+```{r eval=T, echo=TRUE}
+toyGraphWithNetworkSDI <- SDI(toyGraph, variant="nuw")
+```
+
+SDI will leave previously computed indices untouched. Thus, for example, you can compute several indices in a pipe:
+
+```{r multi.metric.example, eval=T, echo=TRUE}
+toyGraph %>% 
+  SDI(variant="nuw") %>%
+  SDI(variant="niu") %>% # nuu?
+  SDI(variant="vuw") %>%
+  SDI(variant="vuu") -> toyGraphWithSeveralSDI
+graph_attr_names(toyGraphWithSeveralSDI)
+vertex_attr_names(toyGraphWithSeveralSDI)
+```
+The same can be achieved by using a vector of variants in a single call:
+```{r multi.metric.example2, eval=T, echo=TRUE}
+toyGraphWithSeveralSDI <- SDI(toyGraph, variant=c("nuw","niu","vuw","vuu"))
+graph_attr_names(toyGraphWithSeveralSDI)
+vertex_attr_names(toyGraphWithSeveralSDI)
+```
+
+Note that for the generalized SDI variant you must provide the additional $\alpha$ parameter:
+```{r generalized.SDI.example, eval=T, echo=TRUE}
+toyGraphWithGeneralizedSDI <- SDI(toyGraph, variant="vug", alpha=0.5) 
+vertex_attr_names(toyGraphWithGeneralizedSDI) 
+vertex_attr(toyGraphWithGeneralizedSDI,"SDI_vug")
+```
+## Optional distance calculation
+
+Calling the `dist_calc()` helper function adds a distance attribute to an input graph. This is automatically performed when `SDI()` is called, but you may facilitate it separately if needed. For the example in the previous section the call is made as follows:
+
+```{r eval=T, echo=TRUE}
+toyGraphWithDistances <- dist_calc(toyGraph)
+edge_attr_names(toyGraphWithDistances)
+```
+
+Having seen the coordinate attributes as 'x' and 'y' (rather than as 'latitude' and 'longitude') the function opts for a Euclidean distance calculation and returns the 3-4-5 triangle distances:
+
+```{r eval=T, echo=TRUE}
+edge_attr(toyGraphWithDistances, "distance")
+```
+
+# Example: Computing and plotting SDI for a geospatial network
+
+rSDI package comes with a real world data set consisting of two data frames: `TurkiyeMigration.flows` contains the data on migration of people between Türkiye's provinces in the period 2016-2017-2018, a consolidated version of raw data from Turkish Statistical Institute. `TurkiyeMigration.nodes` contains labels and geographic coordinates (latitute&longitude) of provinces:
+
+```{r eval=T, echo=TRUE}
+head(TurkiyeMigration.flows)
+head(TurkiyeMigration.nodes)
+```
+
+You may call the `SDI()` function either with an igraph object you compose yourself from flow and node data, or directly giving them to SDI, as follows:
+
+```{r echo=T, eval=T}
+TMSDI <- SDI(TurkiyeMigration.flows, TurkiyeMigration.nodes, variant="vuw")
+#   -- OR --
+library(igraph)
+TMgraph <- graph_from_data_frame(TurkiyeMigration.flows, directed=TRUE, TurkiyeMigration.nodes)
+TMSDI <- SDI(TMgraph, variant="vuw")
+```
+
+rSDI plotting functions make use of available open map packages in the R ecosystem to make a geographical plot of SDI measurements. The `plotSDI()` function produces a visualization where the circles for each note has an area proportional to the node's selected SDI measure. The function will try to optimize the circle sizes as best as it can, but you can customize circle sizes, fill colors, etc. by overriding its parameters. For example you can scale the circles sizes relative to its default as:
+
+```{r echo=T, eval=T}
+plotSDI(TMSDI, variant="vuw", circle.size.scale=1)
+```
+
+Please refer to documentation of `plotSDI()` fur further fine grained control of its plotting parameters.
+
+You may want to visualize the network flows along with the SDI index measurements. This particular combination is provided as a convenience. You can turn on the displaying of network edges using the 'edges' argument to SDO plotter:
+
+```{r echo=T, eval=T}
+plotSDI(TMSDI, variant="vuw", edges=TRUE)
+```
+
+Please note that this combination is based on several graph visualization and geospatial packages. If you need a fine control over all these underlying visualization layers you are recommended to go for a home made solution using packages such as ggraph, sf, and naturalearth.
+
+<!-- ## Visualizing multiple indices -->
+
+<!-- Often one needs to visualize multiple SDI index calculations for comparison. In the TurkiyeMigration data set, for example, it is interesting to compare geographic dispersion of incoming and outgoing migration. In such a case first prepare the indices and then include them in plots: -->
+
+<!-- ```{r echo=T, eval=F} -->
+<!-- TMSDI <- SDI(TMgraph, variant=c("viw","vow")) -->
+<!-- plot(TMSDI, variant=c("viw","vow")) -->
+<!-- ``` -->
+
+<!-- While there is no limit to how many indices you can visualize on a single plot, it is generally not feasible to use more than two. This is because circles for each index is overlaid on to of one another with some opacity and too many overlays would not be much readable. -->
+
+<!-- Plot customization for multi-index plots works in a similar fashion to single index plots. However, certain visualization aspects can be customized on a per-index manner, whereas others can be customized for the whole plot only. For example, you can choose fill colors for your indices, by providing the in the same order with index variants: -->
+
+<!-- ```{r echo=T, eval=F} -->
+<!-- TMSDI <- SDI(TMgraph, variant=c("viw","vow")) -->
+<!-- plot.SDI(TMSDI, variant=c("viw","vow"),  -->
+<!--         circle.color=c("red","orange")) -->
+<!-- ``` -->
+
+<!-- On the other hand, resizing and other aspects of circles are only at the whole plot level, because otherwise the visualization will not allow a relative comparison: -->
+
+<!-- ```{r echo=T, eval=F} -->
+<!-- TMSDI <- SDI(TMgraph, variant=c("viw","vow")) -->
+<!-- plot.SDI(TMSDI, variant=c("viw","vow"),  -->
+<!--         circle.color=c("red","orange"), -->
+<!--         circle.size.scale=1.4) -->
+<!-- ``` -->
+
+# Custom visualization capabilities
+
+The visualization features of rSDI mainly leverages the fact that spatial graphs are often geospatial, and thus one can make use of geospatial libraries in R in combination with graph plotting to visualize these networks on a map. Current version of rSDI does not provide a capability to use your own map, for example when working with a network of flows within a production plant, a schoolyard, etc. Following example is provided for your convenience which can be adapted to your use case. It uses a custom visual as the background of network plot:
+
+```{r echo=T}
+flows<-data.frame(from=c("A","B","A"), to=c("B","A","C"), weight=c(10,20,5))
+nodes<-data.frame(id=c("A","B","C","D"),x=c(0,4,0,4),y=c(3,0,0,3))
+g <- SDI(flows,nodes, variant="vuw")
+library(ggplot2)
+library(ggraph)
+library(ggimage)
+url<-"https://static.wikia.nocookie.net/lotr/images/5/59/Middle-earth.jpg/revision/latest?cb=20060726004750"
+
+lay <- create_layout(g, 'manual', x=V(g)$x, y=V(g)$y)
+p<-ggraph(lay) +
+  geom_edge_bend(aes(label=E(g)$weight), label_size=10,strength=0.4,edge_width=3,alpha=0.3,arrow = arrow(length = unit(10, 'mm')))+
+  #geom_node_point(size = 10, aes(color="yellow"),alpha=0.4) +
+  geom_node_point(aes(size=V(g)$SDI_vuw),color="red")+
+  geom_node_text(label=V(g)$name, size=10, vjust=-0.7,hjust=1)+
+  xlim(-3,5)+ylim(-2,4)
+p<-ggbackground(p, url) 
+p
+```
+
+# References
